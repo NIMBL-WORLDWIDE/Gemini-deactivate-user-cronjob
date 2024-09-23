@@ -2,21 +2,21 @@ apiVersion: batch/v1beta1
 kind: CronJob
 metadata:
   name: deactivate-user
-  namespace: deactivate-cron
+  namespace: alert-cron
 spec: 
   schedule: "*/5 * * * *"  
   concurrencyPolicy: Replace
   jobTemplate:
     metadata:
       name: deactivate-user
-      namespace: deactivate-cron
+      namespace: alert-cron
     spec:
       activeDeadlineSeconds: 120
       # ttlSecondsAfterFinished: 50
       template:
         spec:
           restartPolicy: Never
-          serviceAccountName: deactivateuser-cron
+          serviceAccountName: alertnotification-cron
           containers:
           - name: server
             image: us.gcr.io/gcp-cin-gemini-270001/deactivate-user-cron:prod
