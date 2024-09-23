@@ -1,0 +1,15 @@
+steps:
+  # build the container image
+- name: "gcr.io/cloud-builders/docker"
+  args: ["build", "-t", "us.gcr.io/gcp-cin-gemini-270001/deactivate-user-cron:qa", "."]
+  # push container image
+- name: "gcr.io/cloud-builders/docker"
+  args: ["push", "us.gcr.io/gcp-cin-gemini-270001/deactivate-user-cron:qa"]
+  # deploy container image to GKE
+- name: "gcr.io/cloud-builders/gke-deploy"
+  args:
+  - run
+  - --filename=deployment/qa/cronjob.yaml
+  - --image=us.gcr.io/gcp-cin-gemini-270001/deactivate-user-cron:qa
+  - --location=us-central1-c
+  - --cluster=cintas-gemini-qa
