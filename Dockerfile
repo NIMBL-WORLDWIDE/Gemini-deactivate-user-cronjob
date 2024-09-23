@@ -1,5 +1,5 @@
 # Accept the Go version for the image to be set as a build argument.
-ARG GO_VERSION=1.17
+ARG GO_VERSION=1.23
 
 # First stage: build the executable.
 FROM golang:${GO_VERSION}-alpine AS builder
