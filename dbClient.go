@@ -96,7 +96,7 @@ type accountInfo struct {
 	LastName       string
 	ExpirationDate string
 	CardID         int
-	Active         int
+	Active         string
 }
 
 type groupedUser struct {
@@ -113,9 +113,8 @@ func (c *dbClient) getToExpireUsers() (groupedUsers []groupedUser, err error) {
 			  INNER JOIN account accDesc      on accDesc.accountNum = user.accountNum    
 			  INNER JOIN userAuthAccounts acc on acc.accountNum     = user.accountNum
 			  INNER JOIN userAuth auth        on auth.userAuthID    = acc.userAuthID                  
-			  WHERE user.active = 1
-			  AND user.expirationDate IS NOT NULL
-			  AND user.expirationDate < ( SELECT DATE_ADD(CURDATE(), INTERVAL (SELECT value FROM config WHERE PARAM = 'DAYSFORUSEREXPIRE') DAY) )
+			  WHERE user.expirationDate IS NOT NULL
+			  AND user.expirationDate = ( SELECT DATE_ADD(CURDATE(), INTERVAL (SELECT value FROM config WHERE PARAM = 'DAYSFORUSEREXPIRE') DAY) )
 			  AND auth.userAccessRoleID IN (5, 6)`
 
 	rows, err := c.db.Query(query)
@@ -164,6 +163,14 @@ func (c *dbClient) getToExpireUsers() (groupedUsers []groupedUser, err error) {
 			formattedDate = user.expirationDate.Format("2006-01-02")
 		}
 
+		var status string
+		switch user.active {
+		case 1:
+			status = "Active"
+		default:
+			status = "Inactive"
+		}
+
 		// Add account information to the user's account list
 		userMap[user.userAuthID].Accounts = append(userMap[user.userAuthID].Accounts, accountInfo{
 			AccountDesc:    user.accountDesc,
@@ -171,7 +178,7 @@ func (c *dbClient) getToExpireUsers() (groupedUsers []groupedUser, err error) {
 			LastName:       user.LastName,
 			ExpirationDate: formattedDate,
 			CardID:         user.cardID,
-			Active:         user.active,
+			Active:         status,
 		})
 	}
 
