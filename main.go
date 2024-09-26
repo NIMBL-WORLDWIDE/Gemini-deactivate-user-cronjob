@@ -61,6 +61,8 @@ func main() {
 	}
 
 	// Get user About to Expire
+	log.Debug().Interface("ToExpireUsers", expiredUser).Msg("getToExpireUsers")
+
 	groupedUser, err := dbClient.getToExpireUsers()
 	if err != nil {
 		log.Fatal().Err(err).Msg("getToExpireUsers")
