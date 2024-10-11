@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -188,6 +189,33 @@ func (c *dbClient) getToExpireUsers() (groupedUsers []groupedUser, err error) {
 	}
 
 	return groupedUsers, nil
+}
+
+func (c *dbClient) getSendNotification() (bool, error) {
+	query := `SELECT value FROM config WHERE param = 'SENDNOTIFICATIONDEACTIVATE'`
+
+	rows, err := c.db.Query(query)
+	if err != nil {
+		return false, fmt.Errorf("error executing query: %w", err)
+	}
+	defer rows.Close()
+
+	var value string
+	if rows.Next() {
+		if err := rows.Scan(&value); err != nil {
+			return false, fmt.Errorf("error scanning row: %w", err)
+		}
+	} else {
+		return false, fmt.Errorf("no result found for the parameter 'SENDNOTIFICATIONDEACTIVATE'")
+	}
+
+	floatValue, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return false, fmt.Errorf("error converting value to float: %w", err)
+	}
+
+	// Return value
+	return floatValue == 1.00, nil
 }
 
 func (c *dbClient) setDeactiveUser(userID int) error {
