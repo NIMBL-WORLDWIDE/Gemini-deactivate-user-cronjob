@@ -2,5 +2,7 @@
   "emailAddress": "gemini@cintas.com",
   "emailName": "GEMINI Cintas",
   "templateID": "d-65cd98df82ec49b48e1461e3575bb244",
-  "projectID": "606995045325"
+  "projectID": "606995045325",
+  "expired": "User Expired",
+  "inactive": "User Inactive"
 }

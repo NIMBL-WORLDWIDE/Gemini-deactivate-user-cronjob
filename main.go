@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"time"
 
@@ -20,6 +20,8 @@ type Config struct {
 	EmailAddress string `json:"emailAddress"`
 	EmailName    string `json:"emailName"`
 	TemplateID   string `json:"templateID"`
+	Expired      string `json:"expired"`
+	Inactive     string `json:"inactive"`
 }
 
 var config Config
@@ -42,7 +44,7 @@ func loadConfig(filename string) error {
 	}
 	defer file.Close()
 
-	bytes, err := ioutil.ReadAll(file)
+	bytes, err := io.ReadAll(file)
 	if err != nil {
 		return err
 	}
@@ -83,7 +85,7 @@ func main() {
 	for _, user := range expiredUser {
 		log.Debug().Str("Deactivating User:", user.FirstName+" "+user.LastName).Send()
 		// Deactivate user
-		err := dbClient.setDeactiveUser(user.userID)
+		err := dbClient.setDeactiveUser(user.userID, config.Expired)
 		if err != nil {
 			log.Error().Err(err).Msg("setDeactiveUser")
 			continue
@@ -92,16 +94,17 @@ func main() {
 		log.Debug().Str("Deactivated", user.FirstName+" "+user.LastName).Send()
 	}
 
-	//Check if the notification e-mails is active
-	active, err := dbClient.getSendNotification()
+	//Get Job Options
+	jobOptions, err := dbClient.getCronJobOptions()
 	if err != nil {
 		log.Fatal().Err(err).Msg("getToExpireUsers")
 	}
 
-	if active {
-		// Get user About to Expire
+	//Check if send notifications is enabled
+	if jobOptions.SendNotificationDeactivate {
 		log.Debug().Interface("ToExpireUsers", expiredUser).Msg("getToExpireUsers")
 
+		// Get user About to Expire
 		groupedUser, err := dbClient.getToExpireUsers()
 		if err != nil {
 			log.Fatal().Err(err).Msg("getToExpireUsers")
@@ -112,6 +115,29 @@ func main() {
 			if err := sendNotification(user, sendGridAPIkey); err != nil {
 				log.Error().Err(err).Msgf("Failed to send notification to %s", user.Email)
 			}
+		}
+	}
+
+	//Check if Auto Inactive is Enabled
+	if jobOptions.EnableAutoInactive {
+		inactiveTransactionUsers, err := dbClient.getInactiveTransactionUsers()
+		if err != nil {
+			log.Fatal().Err(err).Msg("getInactiveTransactionUsers")
+		}
+
+		log.Debug().Interface("InactiveUsers", inactiveTransactionUsers).Msg("InactiveUsers")
+
+		// Deactivate Inactive users
+		for _, user := range inactiveTransactionUsers {
+			log.Debug().Str("Deactivating Inactive Transactions Users:", user.FirstName+" "+user.LastName).Send()
+			// Deactivate user
+			err := dbClient.setDeactiveUser(user.userID, config.Inactive)
+			if err != nil {
+				log.Error().Err(err).Msg("setDeactiveUser")
+				continue
+			}
+
+			log.Debug().Str("Deactivated", user.FirstName+" "+user.LastName).Send()
 		}
 	}
 }
