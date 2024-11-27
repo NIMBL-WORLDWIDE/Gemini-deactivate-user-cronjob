@@ -37,13 +37,13 @@ func (c *dbClient) connectDB(user string, password string, dbName string) error 
 	return nil
 }
 
-type expiredUser struct {
+type deactiveUsers struct {
 	userID    int
 	FirstName string
 	LastName  string
 }
 
-func (c *dbClient) getExpiredUsers() (users []expiredUser, err error) {
+func (c *dbClient) getExpiredUsers() (users []deactiveUsers, err error) {
 	query := `SELECT userID,FirstName,LastName FROM user
 	          WHERE active = 1
 			    AND expirationDate IS NOT NULL
@@ -60,7 +60,7 @@ func (c *dbClient) getExpiredUsers() (users []expiredUser, err error) {
 	}()
 
 	for rows.Next() {
-		var user expiredUser
+		var user deactiveUsers
 		err = rows.Scan(
 			&user.userID,
 			&user.FirstName,
@@ -75,6 +75,11 @@ func (c *dbClient) getExpiredUsers() (users []expiredUser, err error) {
 	}
 
 	return users, nil
+}
+
+type jobOptions struct {
+	SendNotificationDeactivate bool
+	EnableAutoInactive         bool
 }
 
 type toExpireUser struct {
@@ -191,40 +196,52 @@ func (c *dbClient) getToExpireUsers() (groupedUsers []groupedUser, err error) {
 	return groupedUsers, nil
 }
 
-func (c *dbClient) getSendNotification() (bool, error) {
-	query := `SELECT value FROM config WHERE param = 'SENDNOTIFICATIONDEACTIVATE'`
+func (c *dbClient) getCronJobOptions() (*jobOptions, error) {
+	query := `SELECT param, value FROM config WHERE param IN ('SENDNOTIFICATIONDEACTIVATE', 'ENABLEAUTOINACTIVE')`
 
 	rows, err := c.db.Query(query)
 	if err != nil {
-		return false, fmt.Errorf("error executing query: %w", err)
+		return nil, fmt.Errorf("error executing query: %w", err)
 	}
 	defer rows.Close()
 
-	var value string
-	if rows.Next() {
-		if err := rows.Scan(&value); err != nil {
-			return false, fmt.Errorf("error scanning row: %w", err)
+	options := jobOptions{}
+
+	for rows.Next() {
+		var param, value string
+		if err := rows.Scan(&param, &value); err != nil {
+			return nil, fmt.Errorf("error scanning row: %w", err)
 		}
-	} else {
-		return false, fmt.Errorf("no result found for the parameter 'SENDNOTIFICATIONDEACTIVATE'")
+
+		floatValue, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return nil, fmt.Errorf("error converting value to float: %w", err)
+		}
+
+		// Update struct fields based on the parameter
+		switch param {
+		case "SENDNOTIFICATIONDEACTIVATE":
+			options.SendNotificationDeactivate = floatValue == 1.00
+		case "ENABLEAUTOINACTIVE":
+			options.EnableAutoInactive = floatValue == 1.00
+		}
 	}
 
-	floatValue, err := strconv.ParseFloat(value, 64)
-	if err != nil {
-		return false, fmt.Errorf("error converting value to float: %w", err)
+	// Verify if any error occurred during the iteration
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error during rows iteration: %w", err)
 	}
 
-	// Return value
-	return floatValue == 1.00, nil
+	return &options, nil
 }
 
-func (c *dbClient) setDeactiveUser(userID int) error {
+func (c *dbClient) setDeactiveUser(userID int, reason string) error {
 	updQuery := `UPDATE user SET active = 0 
 		          WHERE userID = ?
 	`
 	insQuery := `
-		INSERT INTO deactivatedUser (userID, deactivatedDate, deactivatedBy) 
-		VALUES (?, CURDATE(), 'DEACTIVATED_CRONJOB')
+		INSERT INTO deactivatedUser (userID, deactivatedDate, deactivatedBy, reason) 
+		VALUES (?, CURDATE(), 'DEACTIVATED_CRONJOB', ?)
 	`
 
 	// Start Transaction
@@ -250,9 +267,75 @@ func (c *dbClient) setDeactiveUser(userID int) error {
 	}
 
 	// Inset user on control table
-	if _, err = tx.Exec(insQuery, userID); err != nil {
+	if _, err = tx.Exec(insQuery, userID, reason); err != nil {
 		return fmt.Errorf("error inserting deactivated user with ID %d: %w", userID, err)
 	}
 
 	return nil
+}
+
+func (c *dbClient) getInactiveTransactionUsers() (users []deactiveUsers, err error) {
+	query := `SELECT 
+				u.userID, 
+				u.firstName, 
+				u.lastName
+			FROM user u
+			INNER JOIN account acc 
+				ON acc.accountNum = u.accountNum
+			WHERE u.active = 1
+			AND (
+				(acc.industryTypeId = 2 AND 
+				(u.lastDispenseDate IS NULL OR u.lastDispenseDate <= CURRENT_DATE - INTERVAL (SELECT value FROM config WHERE PARAM = 'HCDAYSINACTIVE') DAY)
+				AND (u.lastreturnDate IS NULL OR u.lastreturnDate <= CURRENT_DATE - INTERVAL (SELECT value FROM config WHERE PARAM = 'HCDAYSINACTIVE') DAY)
+				AND (u.dateAdded <= CURRENT_DATE - INTERVAL (SELECT value FROM config WHERE PARAM = 'HCDAYSINACTIVE') DAY))
+				OR
+				(acc.industryTypeId = 1 AND 
+				(u.lastDispenseDate IS NULL OR u.lastDispenseDate <= CURRENT_DATE - INTERVAL (SELECT value FROM config WHERE PARAM = 'NOHCDAYSINACTIVE') DAY)
+				AND (u.lastreturnDate IS NULL OR u.lastreturnDate <= CURRENT_DATE - INTERVAL (SELECT value FROM config WHERE PARAM = 'NOHCDAYSINACTIVE') DAY)
+				AND (u.dateAdded <= CURRENT_DATE - INTERVAL (SELECT value FROM config WHERE PARAM = 'NOHCDAYSINACTIVE') DAY))
+			)`
+
+	rows, err := c.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("erros executing query: %w", err)
+	}
+	defer func() {
+		if rows != nil {
+			rows.Close()
+		}
+	}()
+
+	for rows.Next() {
+		var user deactiveUsers
+		var firstName, lastName sql.NullString // Use sql.NullString to handle nullable strings
+
+		err = rows.Scan(
+			&user.userID,
+			&firstName,
+			&lastName,
+		)
+
+		if err != nil {
+			// Return an error if the scan fails
+			return nil, fmt.Errorf("error scanning row: %w", err)
+		}
+
+		// Handle nullable fields
+		if firstName.Valid {
+			user.FirstName = firstName.String
+		} else {
+			user.FirstName = "NULL" // Default to "NULL" if value is nil
+		}
+
+		if lastName.Valid {
+			user.LastName = lastName.String
+		} else {
+			user.LastName = "NULL" // Default to "NULL" if value is nil
+		}
+
+		// Append user to the list
+		users = append(users, user)
+	}
+
+	return users, nil
 }
