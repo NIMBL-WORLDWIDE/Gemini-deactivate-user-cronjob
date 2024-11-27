@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
@@ -38,15 +39,21 @@ func init() {
 }
 
 func loadConfig(filename string) error {
-	file, err := os.Open(filename)
+	wd, err := os.Getwd()
 	if err != nil {
-		return err
+		log.Fatal().Err(err).Msg("Failed to get working directory")
+	}
+
+	configPath := filepath.Join(wd, filename)
+	file, err := os.Open(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to open config file: %w", err)
 	}
 	defer file.Close()
 
 	bytes, err := io.ReadAll(file)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read config file: %w", err)
 	}
 
 	return json.Unmarshal(bytes, &config)
