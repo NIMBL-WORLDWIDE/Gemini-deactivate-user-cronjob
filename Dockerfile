@@ -48,6 +48,9 @@ COPY --from=builder /app /app
 # to ports below 1024.
 # EXPOSE 8395
 
+# Import the config.json file from the first stage.
+COPY ./config.json /config.json
+
 # Perform any further action as an unprivileged user.
 USER nobody:nobody
 
