@@ -86,19 +86,21 @@ func main() {
 		log.Fatal().Err(err).Msg("getExpiredUsers")
 	}
 
-	log.Debug().Interface("expiredUsers", expiredUser).Msg("expiredUsers")
+	if len(expiredUser) > 0 {
+		log.Debug().Interface("expiredUsers", expiredUser).Msg("expiredUsers")
 
-	// Deactivate Expired users
-	for _, user := range expiredUser {
-		log.Debug().Str("Deactivating User:", user.FirstName+" "+user.LastName).Send()
-		// Deactivate user
-		err := dbClient.setDeactiveUser(user.userID, config.Expired)
-		if err != nil {
-			log.Error().Err(err).Msg("setDeactiveUser")
-			continue
+		// Deactivate Expired users
+		for _, user := range expiredUser {
+			log.Debug().Str("Deactivating User:", user.FirstName+" "+user.LastName).Send()
+			// Deactivate user
+			err := dbClient.setDeactiveUser(user.userID, config.Expired)
+			if err != nil {
+				log.Error().Err(err).Msg("setDeactiveUser")
+				continue
+			}
+
+			log.Debug().Str("Deactivated", user.FirstName+" "+user.LastName).Send()
 		}
-
-		log.Debug().Str("Deactivated", user.FirstName+" "+user.LastName).Send()
 	}
 
 	//Get Job Options
