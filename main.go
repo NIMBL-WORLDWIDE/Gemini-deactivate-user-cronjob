@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
@@ -20,6 +21,8 @@ type Config struct {
 	EmailAddress string `json:"emailAddress"`
 	EmailName    string `json:"emailName"`
 	TemplateID   string `json:"templateID"`
+	Expired      string `json:"expired"`
+	Inactive     string `json:"inactive"`
 }
 
 var config Config
@@ -36,15 +39,21 @@ func init() {
 }
 
 func loadConfig(filename string) error {
-	file, err := os.Open(filename)
+	wd, err := os.Getwd()
 	if err != nil {
-		return err
+		log.Fatal().Err(err).Msg("Failed to get working directory")
+	}
+
+	configPath := filepath.Join(wd, filename)
+	file, err := os.Open(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to open config file: %w", err)
 	}
 	defer file.Close()
 
-	bytes, err := ioutil.ReadAll(file)
+	bytes, err := io.ReadAll(file)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read config file: %w", err)
 	}
 
 	return json.Unmarshal(bytes, &config)
@@ -77,31 +86,34 @@ func main() {
 		log.Fatal().Err(err).Msg("getExpiredUsers")
 	}
 
-	log.Debug().Interface("expiredUsers", expiredUser).Msg("expiredUsers")
+	if len(expiredUser) > 0 {
+		log.Debug().Interface("expiredUsers", expiredUser).Msg("expiredUsers")
 
-	// Deactivate Expired users
-	for _, user := range expiredUser {
-		log.Debug().Str("Deactivating User:", user.FirstName+" "+user.LastName).Send()
-		// Deactivate user
-		err := dbClient.setDeactiveUser(user.userID)
-		if err != nil {
-			log.Error().Err(err).Msg("setDeactiveUser")
-			continue
+		// Deactivate Expired users
+		for _, user := range expiredUser {
+			log.Debug().Str("Deactivating User:", user.FirstName+" "+user.LastName).Send()
+			// Deactivate user
+			err := dbClient.setDeactiveUser(user.userID, config.Expired)
+			if err != nil {
+				log.Error().Err(err).Msg("setDeactiveUser")
+				continue
+			}
+
+			log.Debug().Str("Deactivated", user.FirstName+" "+user.LastName).Send()
 		}
-
-		log.Debug().Str("Deactivated", user.FirstName+" "+user.LastName).Send()
 	}
 
-	//Check if the notification e-mails is active
-	active, err := dbClient.getSendNotification()
+	//Get Job Options
+	jobOptions, err := dbClient.getCronJobOptions()
 	if err != nil {
 		log.Fatal().Err(err).Msg("getToExpireUsers")
 	}
 
-	if active {
-		// Get user About to Expire
+	//Check if send notifications is enabled
+	if jobOptions.SendNotificationDeactivate {
 		log.Debug().Interface("ToExpireUsers", expiredUser).Msg("getToExpireUsers")
 
+		// Get user About to Expire
 		groupedUser, err := dbClient.getToExpireUsers()
 		if err != nil {
 			log.Fatal().Err(err).Msg("getToExpireUsers")
@@ -112,6 +124,29 @@ func main() {
 			if err := sendNotification(user, sendGridAPIkey); err != nil {
 				log.Error().Err(err).Msgf("Failed to send notification to %s", user.Email)
 			}
+		}
+	}
+
+	//Check if Auto Inactive is Enabled
+	if jobOptions.EnableAutoInactive {
+		inactiveTransactionUsers, err := dbClient.getInactiveTransactionUsers()
+		if err != nil {
+			log.Fatal().Err(err).Msg("getInactiveTransactionUsers")
+		}
+
+		log.Debug().Interface("InactiveUsers", inactiveTransactionUsers).Msg("InactiveUsers")
+
+		// Deactivate Inactive users
+		for _, user := range inactiveTransactionUsers {
+			log.Debug().Str("Deactivating Inactive Transactions Users:", user.FirstName+" "+user.LastName).Send()
+			// Deactivate user
+			err := dbClient.setDeactiveUser(user.userID, config.Inactive)
+			if err != nil {
+				log.Error().Err(err).Msg("setDeactiveUser")
+				continue
+			}
+
+			log.Debug().Str("Deactivated", user.FirstName+" "+user.LastName).Send()
 		}
 	}
 }
