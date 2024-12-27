@@ -80,6 +80,8 @@ func (c *dbClient) getExpiredUsers() (users []deactiveUsers, err error) {
 type jobOptions struct {
 	SendNotificationDeactivate bool
 	EnableAutoInactive         bool
+	EnableTestRun              bool
+	TestRunEmail               string
 }
 
 type toExpireUser struct {
@@ -120,10 +122,10 @@ func (c *dbClient) getToExpireUsers() (groupedUsers []groupedUser, err error) {
 			  INNER JOIN userAuthAccounts acc on acc.accountNum     = user.accountNum
 			  INNER JOIN userAuth auth        on auth.userAuthID    = acc.userAuthID                  
 			  WHERE user.expirationDate IS NOT NULL
-			  AND user.expirationDate = ( SELECT DATE_ADD(CURDATE(), INTERVAL (SELECT value FROM config WHERE PARAM = 'DAYSFORUSEREXPIRE') DAY) )
+			  AND user.expirationDate = ( SELECT DATE_ADD(CURDATE(), INTERVAL (SELECT value FROM config WHERE PARAM = ?) DAY) )
 			  AND auth.userAccessRoleID IN (5, 6)`
 
-	rows, err := c.db.Query(query)
+	rows, err := c.db.Query(query, DaysForUserExpire)
 	if err != nil {
 		return nil, fmt.Errorf("error executing query: %w", err)
 	}
@@ -197,9 +199,9 @@ func (c *dbClient) getToExpireUsers() (groupedUsers []groupedUser, err error) {
 }
 
 func (c *dbClient) getCronJobOptions() (*jobOptions, error) {
-	query := `SELECT param, value FROM config WHERE param IN ('SENDNOTIFICATIONDEACTIVATE', 'ENABLEAUTOINACTIVE')`
+	query := `SELECT param, value, stringValue FROM config WHERE param IN (?, ?, ?, ?)`
 
-	rows, err := c.db.Query(query)
+	rows, err := c.db.Query(query, SendNotificationDeactivate, EnableAutoInactive, EnableTestRun, TestRunEmail)
 	if err != nil {
 		return nil, fmt.Errorf("error executing query: %w", err)
 	}
@@ -209,7 +211,8 @@ func (c *dbClient) getCronJobOptions() (*jobOptions, error) {
 
 	for rows.Next() {
 		var param, value string
-		if err := rows.Scan(&param, &value); err != nil {
+		var stringValue sql.NullString
+		if err := rows.Scan(&param, &value, &stringValue); err != nil {
 			return nil, fmt.Errorf("error scanning row: %w", err)
 		}
 
@@ -220,10 +223,16 @@ func (c *dbClient) getCronJobOptions() (*jobOptions, error) {
 
 		// Update struct fields based on the parameter
 		switch param {
-		case "SENDNOTIFICATIONDEACTIVATE":
+		case SendNotificationDeactivate:
 			options.SendNotificationDeactivate = floatValue == 1.00
-		case "ENABLEAUTOINACTIVE":
+		case EnableAutoInactive:
 			options.EnableAutoInactive = floatValue == 1.00
+		case EnableTestRun:
+			options.EnableTestRun = floatValue == 1.00
+		case TestRunEmail:
+			if stringValue.Valid {
+				options.TestRunEmail = stringValue.String
+			}
 		}
 	}
 
@@ -285,17 +294,17 @@ func (c *dbClient) getInactiveTransactionUsers() (users []deactiveUsers, err err
 			WHERE u.active = 1
 			AND (
 				(acc.industryTypeId = 2 AND 
-				(u.lastDispenseDate IS NULL OR u.lastDispenseDate <= CURRENT_DATE - INTERVAL (SELECT value FROM config WHERE PARAM = 'HCDAYSINACTIVE') DAY)
-				AND (u.lastreturnDate IS NULL OR u.lastreturnDate <= CURRENT_DATE - INTERVAL (SELECT value FROM config WHERE PARAM = 'HCDAYSINACTIVE') DAY)
-				AND (u.dateAdded <= CURRENT_DATE - INTERVAL (SELECT value FROM config WHERE PARAM = 'HCDAYSINACTIVE') DAY))
+				(u.lastDispenseDate IS NULL OR u.lastDispenseDate <= CURRENT_DATE - INTERVAL (SELECT value FROM config WHERE PARAM = ?) DAY)
+				AND (u.lastreturnDate IS NULL OR u.lastreturnDate <= CURRENT_DATE - INTERVAL (SELECT value FROM config WHERE PARAM = ?) DAY)
+				AND (u.dateAdded <= CURRENT_DATE - INTERVAL (SELECT value FROM config WHERE PARAM = ?) DAY))
 				OR
 				(acc.industryTypeId = 1 AND 
-				(u.lastDispenseDate IS NULL OR u.lastDispenseDate <= CURRENT_DATE - INTERVAL (SELECT value FROM config WHERE PARAM = 'NOHCDAYSINACTIVE') DAY)
-				AND (u.lastreturnDate IS NULL OR u.lastreturnDate <= CURRENT_DATE - INTERVAL (SELECT value FROM config WHERE PARAM = 'NOHCDAYSINACTIVE') DAY)
-				AND (u.dateAdded <= CURRENT_DATE - INTERVAL (SELECT value FROM config WHERE PARAM = 'NOHCDAYSINACTIVE') DAY))
+				(u.lastDispenseDate IS NULL OR u.lastDispenseDate <= CURRENT_DATE - INTERVAL (SELECT value FROM config WHERE PARAM = ?) DAY)
+				AND (u.lastreturnDate IS NULL OR u.lastreturnDate <= CURRENT_DATE - INTERVAL (SELECT value FROM config WHERE PARAM = ?) DAY)
+				AND (u.dateAdded <= CURRENT_DATE - INTERVAL (SELECT value FROM config WHERE PARAM = ?) DAY))
 			)`
 
-	rows, err := c.db.Query(query)
+	rows, err := c.db.Query(query, HcDaysInactive, HcDaysInactive, HcDaysInactive, NoHcDaysInactive, NoHcDaysInactive, NoHcDaysInactive)
 	if err != nil {
 		return nil, fmt.Errorf("erros executing query: %w", err)
 	}
