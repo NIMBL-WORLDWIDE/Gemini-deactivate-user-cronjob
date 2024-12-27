@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
@@ -26,6 +30,16 @@ type Config struct {
 }
 
 var config Config
+
+const (
+	SendNotificationDeactivate = "SENDNOTIFICATIONDEACTIVATE"
+	EnableAutoInactive         = "ENABLEAUTOINACTIVE"
+	EnableTestRun              = "ENABLETESTRUN"
+	DaysForUserExpire          = "DAYSFORUSEREXPIRE"
+	HcDaysInactive             = "HCDAYSINACTIVE"
+	NoHcDaysInactive           = "NOHCDAYSINACTIVE"
+	TestRunEmail               = "TESTRUNEMAIL"
+)
 
 func init() {
 	zerolog.LevelFieldName = "severity"
@@ -127,15 +141,26 @@ func main() {
 		}
 	}
 
-	//Check if Auto Inactive is Enabled
-	if jobOptions.EnableAutoInactive {
-		inactiveTransactionUsers, err := dbClient.getInactiveTransactionUsers()
+	//Get Inactive Users Without Transactions
+	inactiveTransactionUsers, err := dbClient.getInactiveTransactionUsers()
+	if err != nil {
+		log.Fatal().Err(err).Msg("getInactiveTransactionUsers")
+	}
+
+	//Check if TestRun is Enabled
+	if jobOptions.EnableTestRun && len(inactiveTransactionUsers) > 0 {
+		excelBuffer, err := createExcelInMemory(inactiveTransactionUsers)
 		if err != nil {
-			log.Fatal().Err(err).Msg("getInactiveTransactionUsers")
+			log.Fatal().Err(err).Msg("Failed to create Excel file in memory")
 		}
 
-		log.Debug().Interface("InactiveUsers", inactiveTransactionUsers).Msg("InactiveUsers")
+		if err := sendNotificationTestRun(jobOptions, excelBuffer, sendGridAPIkey); err != nil {
+			log.Error().Err(err).Msgf("Failed to send notification to %s", jobOptions.TestRunEmail)
+		}
+	}
 
+	//Check if Auto Inactive is Enabled
+	if jobOptions.EnableAutoInactive && len(inactiveTransactionUsers) > 0 {
 		// Deactivate Inactive users
 		for _, user := range inactiveTransactionUsers {
 			log.Debug().Str("Deactivating Inactive Transactions Users:", user.FirstName+" "+user.LastName).Send()
@@ -202,4 +227,82 @@ func sendNotification(user groupedUser, sendGridAPIkey string) error {
 
 	log.Debug().Str("Email sent to", user.Email).Send()
 	return nil
+}
+
+func sendNotificationTestRun(opt *jobOptions, attachment *bytes.Buffer, sendGridAPIkey string) error {
+	log.Debug().Str("Send Email to:", opt.TestRunEmail).Send()
+
+	// Create SendGrid object
+	m := mail.NewV3Mail()
+	e := mail.NewEmail(config.EmailName, config.EmailAddress)
+	m.SetFrom(e)
+
+	m.Subject = "Technical Notification" // Define a subject specific for technical users
+	content := mail.NewContent("text/plain", "Dear Technical User,\n\nPlease find the attached file for your review. \n\nThe users in the attachment will be deactivated due to inactivity.\n\nBest regards,\nTeam")
+	m.AddContent(content)
+
+	// E-mail set up
+	p := mail.NewPersonalization()
+	emails := strings.Split(opt.TestRunEmail, ";") // Split emails by `;`
+
+	for _, email := range emails {
+		email = strings.TrimSpace(email) // Remove blank spaces
+		if email != "" {
+			p.AddTos(mail.NewEmail(email, email)) // Add each e-mail
+		}
+	}
+
+	m.AddPersonalizations(p)
+
+	// Add attachment if provided
+	if attachment != nil {
+		fileAttachment := mail.NewAttachment()
+		encodedContent := base64.StdEncoding.EncodeToString(attachment.Bytes())
+		fileAttachment.SetContent(encodedContent)
+		fileAttachment.SetType("application/vnd.ms-excel")
+		fileAttachment.SetFilename("deactive_users.csv")
+		fileAttachment.SetDisposition("attachment")
+		m.AddAttachment(fileAttachment)
+	}
+
+	// Create Requisition
+	request := sendgrid.GetRequest(sendGridAPIkey, "/v3/mail/send", "https://api.sendgrid.com")
+	request.Method = "POST"
+	request.Body = mail.GetRequestBody(m)
+
+	// Send E-mail
+	_, err := sendgrid.API(request)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to send email")
+		return err
+	}
+
+	log.Debug().Str("Email sent to", opt.TestRunEmail).Send()
+	return nil
+}
+
+func createExcelInMemory(users []deactiveUsers) (*bytes.Buffer, error) {
+	buffer := &bytes.Buffer{}
+	writer := csv.NewWriter(buffer)
+	defer writer.Flush()
+
+	// Write header row
+	header := []string{"UserID", "FirstName", "LastName"}
+	if err := writer.Write(header); err != nil {
+		return nil, fmt.Errorf("error writing header: %w", err)
+	}
+
+	// Write user data
+	for _, user := range users {
+		row := []string{
+			fmt.Sprintf("%d", user.userID),
+			user.FirstName,
+			user.LastName,
+		}
+		if err := writer.Write(row); err != nil {
+			return nil, fmt.Errorf("error writing row: %w", err)
+		}
+	}
+
+	return buffer, nil
 }
