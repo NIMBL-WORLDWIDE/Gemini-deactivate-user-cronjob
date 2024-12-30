@@ -94,10 +94,28 @@ func main() {
 	}
 	defer dbClient.db.Close()
 
+	//Get Job Options
+	jobOptions, err := dbClient.getCronJobOptions()
+	if err != nil {
+		log.Fatal().Err(err).Msg("getToExpireUsers")
+	}
+
 	// Get Expired Users
 	expiredUser, err := dbClient.getExpiredUsers()
 	if err != nil {
 		log.Fatal().Err(err).Msg("getExpiredUsers")
+	}
+
+	//Check if TestRun is Enabled
+	if jobOptions.EnableTestRun && len(expiredUser) > 0 {
+		excelBuffer, err := createExcelInMemory(expiredUser)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to create Excel file in memory")
+		}
+
+		if err := sendNotificationTestRun(jobOptions, excelBuffer, sendGridAPIkey, config.Expired); err != nil {
+			log.Error().Err(err).Msgf("Failed to send notification to %s", jobOptions.TestRunEmail)
+		}
 	}
 
 	if len(expiredUser) > 0 {
@@ -115,12 +133,6 @@ func main() {
 
 			log.Debug().Str("Deactivated", user.FirstName+" "+user.LastName).Send()
 		}
-	}
-
-	//Get Job Options
-	jobOptions, err := dbClient.getCronJobOptions()
-	if err != nil {
-		log.Fatal().Err(err).Msg("getToExpireUsers")
 	}
 
 	//Check if send notifications is enabled
@@ -154,7 +166,7 @@ func main() {
 			log.Fatal().Err(err).Msg("Failed to create Excel file in memory")
 		}
 
-		if err := sendNotificationTestRun(jobOptions, excelBuffer, sendGridAPIkey); err != nil {
+		if err := sendNotificationTestRun(jobOptions, excelBuffer, sendGridAPIkey, config.Inactive); err != nil {
 			log.Error().Err(err).Msgf("Failed to send notification to %s", jobOptions.TestRunEmail)
 		}
 	}
@@ -229,7 +241,7 @@ func sendNotification(user groupedUser, sendGridAPIkey string) error {
 	return nil
 }
 
-func sendNotificationTestRun(opt *jobOptions, attachment *bytes.Buffer, sendGridAPIkey string) error {
+func sendNotificationTestRun(opt *jobOptions, attachment *bytes.Buffer, sendGridAPIkey string, reason string) error {
 	log.Debug().Str("Send Email to:", opt.TestRunEmail).Send()
 
 	// Create SendGrid object
@@ -238,7 +250,11 @@ func sendNotificationTestRun(opt *jobOptions, attachment *bytes.Buffer, sendGrid
 	m.SetFrom(e)
 
 	m.Subject = "Technical Notification" // Define a subject specific for technical users
-	content := mail.NewContent("text/plain", "Dear Technical User,\n\nPlease find the attached file for your review. \n\nThe users in the attachment will be deactivated due to inactivity.\n\nBest regards,\nTeam")
+	message := fmt.Sprintf(
+		"Dear Technical User,\n\nPlease find the attached file for your review. \n\nThe users in the attachment will be deactivated due to reason : %s .\n\nBest regards,\nTeam",
+		reason,
+	)
+	content := mail.NewContent("text/plain", message)
 	m.AddContent(content)
 
 	// E-mail set up
