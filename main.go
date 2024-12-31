@@ -94,6 +94,12 @@ func main() {
 	}
 	defer dbClient.db.Close()
 
+	//Get Job Options
+	jobOptions, err := dbClient.getCronJobOptions()
+	if err != nil {
+		log.Fatal().Err(err).Msg("getToExpireUsers")
+	}
+
 	// Get Expired Users
 	expiredUser, err := dbClient.getExpiredUsers()
 	if err != nil {
@@ -115,12 +121,6 @@ func main() {
 
 			log.Debug().Str("Deactivated", user.FirstName+" "+user.LastName).Send()
 		}
-	}
-
-	//Get Job Options
-	jobOptions, err := dbClient.getCronJobOptions()
-	if err != nil {
-		log.Fatal().Err(err).Msg("getToExpireUsers")
 	}
 
 	//Check if send notifications is enabled
@@ -148,8 +148,11 @@ func main() {
 	}
 
 	//Check if TestRun is Enabled
-	if jobOptions.EnableTestRun && len(inactiveTransactionUsers) > 0 {
-		excelBuffer, err := createExcelInMemory(inactiveTransactionUsers)
+	if (jobOptions.EnableTestRun) && (len(inactiveTransactionUsers) > 0 || len(expiredUser) > 0) {
+		// Combine the two lists into a single slice
+		combinedUsers := append(inactiveTransactionUsers, expiredUser...)
+
+		excelBuffer, err := createExcelInMemory(combinedUsers)
 		if err != nil {
 			log.Fatal().Err(err).Msg("Failed to create Excel file in memory")
 		}
@@ -238,7 +241,7 @@ func sendNotificationTestRun(opt *jobOptions, attachment *bytes.Buffer, sendGrid
 	m.SetFrom(e)
 
 	m.Subject = "Technical Notification" // Define a subject specific for technical users
-	content := mail.NewContent("text/plain", "Dear Technical User,\n\nPlease find the attached file for your review. \n\nThe users in the attachment will be deactivated due to inactivity.\n\nBest regards,\nTeam")
+	content := mail.NewContent("text/plain", "Dear Technical User,\n\nPlease find the attached file for your review. \n\nThe users in the attachment will be deactivated .\n\nBest regards,\nTeam")
 	m.AddContent(content)
 
 	// E-mail set up
@@ -287,7 +290,7 @@ func createExcelInMemory(users []deactiveUsers) (*bytes.Buffer, error) {
 	defer writer.Flush()
 
 	// Write header row
-	header := []string{"UserID", "FirstName", "LastName"}
+	header := []string{"UserID", "FirstName", "LastName", "Reason"}
 	if err := writer.Write(header); err != nil {
 		return nil, fmt.Errorf("error writing header: %w", err)
 	}
@@ -298,6 +301,7 @@ func createExcelInMemory(users []deactiveUsers) (*bytes.Buffer, error) {
 			fmt.Sprintf("%d", user.userID),
 			user.FirstName,
 			user.LastName,
+			user.Reason,
 		}
 		if err := writer.Write(row); err != nil {
 			return nil, fmt.Errorf("error writing row: %w", err)
