@@ -41,6 +41,7 @@ type deactiveUsers struct {
 	userID    int
 	FirstName string
 	LastName  string
+	Reason    string
 }
 
 func (c *dbClient) getExpiredUsers() (users []deactiveUsers, err error) {
@@ -71,6 +72,7 @@ func (c *dbClient) getExpiredUsers() (users []deactiveUsers, err error) {
 			return
 		}
 
+		user.Reason = config.Expired
 		users = append(users, user)
 	}
 
@@ -342,6 +344,7 @@ func (c *dbClient) getInactiveTransactionUsers() (users []deactiveUsers, err err
 			user.LastName = "NULL" // Default to "NULL" if value is nil
 		}
 
+		user.Reason = config.Inactive
 		// Append user to the list
 		users = append(users, user)
 	}

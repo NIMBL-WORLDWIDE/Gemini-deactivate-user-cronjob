@@ -106,18 +106,6 @@ func main() {
 		log.Fatal().Err(err).Msg("getExpiredUsers")
 	}
 
-	//Check if TestRun is Enabled
-	if jobOptions.EnableTestRun && len(expiredUser) > 0 {
-		excelBuffer, err := createExcelInMemory(expiredUser)
-		if err != nil {
-			log.Fatal().Err(err).Msg("Failed to create Excel file in memory")
-		}
-
-		if err := sendNotificationTestRun(jobOptions, excelBuffer, sendGridAPIkey, config.Expired); err != nil {
-			log.Error().Err(err).Msgf("Failed to send notification to %s", jobOptions.TestRunEmail)
-		}
-	}
-
 	if len(expiredUser) > 0 {
 		log.Debug().Interface("expiredUsers", expiredUser).Msg("expiredUsers")
 
@@ -160,13 +148,16 @@ func main() {
 	}
 
 	//Check if TestRun is Enabled
-	if jobOptions.EnableTestRun && len(inactiveTransactionUsers) > 0 {
-		excelBuffer, err := createExcelInMemory(inactiveTransactionUsers)
+	if (jobOptions.EnableTestRun) && (len(inactiveTransactionUsers) > 0 || len(expiredUser) > 0) {
+		// Combine the two lists into a single slice
+		combinedUsers := append(inactiveTransactionUsers, expiredUser...)
+
+		excelBuffer, err := createExcelInMemory(combinedUsers)
 		if err != nil {
 			log.Fatal().Err(err).Msg("Failed to create Excel file in memory")
 		}
 
-		if err := sendNotificationTestRun(jobOptions, excelBuffer, sendGridAPIkey, config.Inactive); err != nil {
+		if err := sendNotificationTestRun(jobOptions, excelBuffer, sendGridAPIkey); err != nil {
 			log.Error().Err(err).Msgf("Failed to send notification to %s", jobOptions.TestRunEmail)
 		}
 	}
@@ -241,7 +232,7 @@ func sendNotification(user groupedUser, sendGridAPIkey string) error {
 	return nil
 }
 
-func sendNotificationTestRun(opt *jobOptions, attachment *bytes.Buffer, sendGridAPIkey string, reason string) error {
+func sendNotificationTestRun(opt *jobOptions, attachment *bytes.Buffer, sendGridAPIkey string) error {
 	log.Debug().Str("Send Email to:", opt.TestRunEmail).Send()
 
 	// Create SendGrid object
@@ -250,11 +241,7 @@ func sendNotificationTestRun(opt *jobOptions, attachment *bytes.Buffer, sendGrid
 	m.SetFrom(e)
 
 	m.Subject = "Technical Notification" // Define a subject specific for technical users
-	message := fmt.Sprintf(
-		"Dear Technical User,\n\nPlease find the attached file for your review. \n\nThe users in the attachment will be deactivated due to reason : %s .\n\nBest regards,\nTeam",
-		reason,
-	)
-	content := mail.NewContent("text/plain", message)
+	content := mail.NewContent("text/plain", "Dear Technical User,\n\nPlease find the attached file for your review. \n\nThe users in the attachment will be deactivated .\n\nBest regards,\nTeam")
 	m.AddContent(content)
 
 	// E-mail set up
@@ -303,7 +290,7 @@ func createExcelInMemory(users []deactiveUsers) (*bytes.Buffer, error) {
 	defer writer.Flush()
 
 	// Write header row
-	header := []string{"UserID", "FirstName", "LastName"}
+	header := []string{"UserID", "FirstName", "LastName", "Reason"}
 	if err := writer.Write(header); err != nil {
 		return nil, fmt.Errorf("error writing header: %w", err)
 	}
@@ -314,6 +301,7 @@ func createExcelInMemory(users []deactiveUsers) (*bytes.Buffer, error) {
 			fmt.Sprintf("%d", user.userID),
 			user.FirstName,
 			user.LastName,
+			user.Reason,
 		}
 		if err := writer.Write(row); err != nil {
 			return nil, fmt.Errorf("error writing row: %w", err)
