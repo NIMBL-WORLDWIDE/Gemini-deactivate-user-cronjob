@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
@@ -20,9 +25,21 @@ type Config struct {
 	EmailAddress string `json:"emailAddress"`
 	EmailName    string `json:"emailName"`
 	TemplateID   string `json:"templateID"`
+	Expired      string `json:"expired"`
+	Inactive     string `json:"inactive"`
 }
 
 var config Config
+
+const (
+	SendNotificationDeactivate = "SENDNOTIFICATIONDEACTIVATE"
+	EnableAutoInactive         = "ENABLEAUTOINACTIVE"
+	EnableTestRun              = "ENABLETESTRUN"
+	DaysForUserExpire          = "DAYSFORUSEREXPIRE"
+	HcDaysInactive             = "HCDAYSINACTIVE"
+	NoHcDaysInactive           = "NOHCDAYSINACTIVE"
+	TestRunEmail               = "TESTRUNEMAIL"
+)
 
 func init() {
 	zerolog.LevelFieldName = "severity"
@@ -36,15 +53,21 @@ func init() {
 }
 
 func loadConfig(filename string) error {
-	file, err := os.Open(filename)
+	wd, err := os.Getwd()
 	if err != nil {
-		return err
+		log.Fatal().Err(err).Msg("Failed to get working directory")
+	}
+
+	configPath := filepath.Join(wd, filename)
+	file, err := os.Open(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to open config file: %w", err)
 	}
 	defer file.Close()
 
-	bytes, err := ioutil.ReadAll(file)
+	bytes, err := io.ReadAll(file)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read config file: %w", err)
 	}
 
 	return json.Unmarshal(bytes, &config)
@@ -71,37 +94,40 @@ func main() {
 	}
 	defer dbClient.db.Close()
 
+	//Get Job Options
+	jobOptions, err := dbClient.getCronJobOptions()
+	if err != nil {
+		log.Fatal().Err(err).Msg("getToExpireUsers")
+	}
+
 	// Get Expired Users
 	expiredUser, err := dbClient.getExpiredUsers()
 	if err != nil {
 		log.Fatal().Err(err).Msg("getExpiredUsers")
 	}
 
-	log.Debug().Interface("expiredUsers", expiredUser).Msg("expiredUsers")
+	if len(expiredUser) > 0 {
+		log.Debug().Interface("expiredUsers", expiredUser).Msg("expiredUsers")
 
-	// Deactivate Expired users
-	for _, user := range expiredUser {
-		log.Debug().Str("Deactivating User:", user.FirstName+" "+user.LastName).Send()
-		// Deactivate user
-		err := dbClient.setDeactiveUser(user.userID)
-		if err != nil {
-			log.Error().Err(err).Msg("setDeactiveUser")
-			continue
+		// Deactivate Expired users
+		for _, user := range expiredUser {
+			log.Debug().Str("Deactivating User:", user.FirstName+" "+user.LastName).Send()
+			// Deactivate user
+			err := dbClient.setDeactiveUser(user.userID, config.Expired)
+			if err != nil {
+				log.Error().Err(err).Msg("setDeactiveUser")
+				continue
+			}
+
+			log.Debug().Str("Deactivated", user.FirstName+" "+user.LastName).Send()
 		}
-
-		log.Debug().Str("Deactivated", user.FirstName+" "+user.LastName).Send()
 	}
 
-	//Check if the notification e-mails is active
-	active, err := dbClient.getSendNotification()
-	if err != nil {
-		log.Fatal().Err(err).Msg("getToExpireUsers")
-	}
-
-	if active {
-		// Get user About to Expire
+	//Check if send notifications is enabled
+	if jobOptions.SendNotificationDeactivate {
 		log.Debug().Interface("ToExpireUsers", expiredUser).Msg("getToExpireUsers")
 
+		// Get user About to Expire
 		groupedUser, err := dbClient.getToExpireUsers()
 		if err != nil {
 			log.Fatal().Err(err).Msg("getToExpireUsers")
@@ -112,6 +138,43 @@ func main() {
 			if err := sendNotification(user, sendGridAPIkey); err != nil {
 				log.Error().Err(err).Msgf("Failed to send notification to %s", user.Email)
 			}
+		}
+	}
+
+	//Get Inactive Users Without Transactions
+	inactiveTransactionUsers, err := dbClient.getInactiveTransactionUsers()
+	if err != nil {
+		log.Fatal().Err(err).Msg("getInactiveTransactionUsers")
+	}
+
+	//Check if TestRun is Enabled
+	if (jobOptions.EnableTestRun) && (len(inactiveTransactionUsers) > 0 || len(expiredUser) > 0) {
+		// Combine the two lists into a single slice
+		combinedUsers := append(inactiveTransactionUsers, expiredUser...)
+
+		excelBuffer, err := createExcelInMemory(combinedUsers)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to create Excel file in memory")
+		}
+
+		if err := sendNotificationTestRun(jobOptions, excelBuffer, sendGridAPIkey); err != nil {
+			log.Error().Err(err).Msgf("Failed to send notification to %s", jobOptions.TestRunEmail)
+		}
+	}
+
+	//Check if Auto Inactive is Enabled
+	if jobOptions.EnableAutoInactive && len(inactiveTransactionUsers) > 0 {
+		// Deactivate Inactive users
+		for _, user := range inactiveTransactionUsers {
+			log.Debug().Str("Deactivating Inactive Transactions Users:", user.FirstName+" "+user.LastName).Send()
+			// Deactivate user
+			err := dbClient.setDeactiveUser(user.userID, config.Inactive)
+			if err != nil {
+				log.Error().Err(err).Msg("setDeactiveUser")
+				continue
+			}
+
+			log.Debug().Str("Deactivated", user.FirstName+" "+user.LastName).Send()
 		}
 	}
 }
@@ -167,4 +230,83 @@ func sendNotification(user groupedUser, sendGridAPIkey string) error {
 
 	log.Debug().Str("Email sent to", user.Email).Send()
 	return nil
+}
+
+func sendNotificationTestRun(opt *jobOptions, attachment *bytes.Buffer, sendGridAPIkey string) error {
+	log.Debug().Str("Send Email to:", opt.TestRunEmail).Send()
+
+	// Create SendGrid object
+	m := mail.NewV3Mail()
+	e := mail.NewEmail(config.EmailName, config.EmailAddress)
+	m.SetFrom(e)
+
+	m.Subject = "Technical Notification" // Define a subject specific for technical users
+	content := mail.NewContent("text/plain", "Dear Technical User,\n\nPlease find the attached file for your review. \n\nThe users in the attachment will be deactivated .\n\nBest regards,\nTeam")
+	m.AddContent(content)
+
+	// E-mail set up
+	p := mail.NewPersonalization()
+	emails := strings.Split(opt.TestRunEmail, ";") // Split emails by `;`
+
+	for _, email := range emails {
+		email = strings.TrimSpace(email) // Remove blank spaces
+		if email != "" {
+			p.AddTos(mail.NewEmail(email, email)) // Add each e-mail
+		}
+	}
+
+	m.AddPersonalizations(p)
+
+	// Add attachment if provided
+	if attachment != nil {
+		fileAttachment := mail.NewAttachment()
+		encodedContent := base64.StdEncoding.EncodeToString(attachment.Bytes())
+		fileAttachment.SetContent(encodedContent)
+		fileAttachment.SetType("application/vnd.ms-excel")
+		fileAttachment.SetFilename("deactive_users.csv")
+		fileAttachment.SetDisposition("attachment")
+		m.AddAttachment(fileAttachment)
+	}
+
+	// Create Requisition
+	request := sendgrid.GetRequest(sendGridAPIkey, "/v3/mail/send", "https://api.sendgrid.com")
+	request.Method = "POST"
+	request.Body = mail.GetRequestBody(m)
+
+	// Send E-mail
+	_, err := sendgrid.API(request)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to send email")
+		return err
+	}
+
+	log.Debug().Str("Email sent to", opt.TestRunEmail).Send()
+	return nil
+}
+
+func createExcelInMemory(users []deactiveUsers) (*bytes.Buffer, error) {
+	buffer := &bytes.Buffer{}
+	writer := csv.NewWriter(buffer)
+	defer writer.Flush()
+
+	// Write header row
+	header := []string{"UserID", "FirstName", "LastName", "Reason"}
+	if err := writer.Write(header); err != nil {
+		return nil, fmt.Errorf("error writing header: %w", err)
+	}
+
+	// Write user data
+	for _, user := range users {
+		row := []string{
+			fmt.Sprintf("%d", user.userID),
+			user.FirstName,
+			user.LastName,
+			user.Reason,
+		}
+		if err := writer.Write(row); err != nil {
+			return nil, fmt.Errorf("error writing row: %w", err)
+		}
+	}
+
+	return buffer, nil
 }
