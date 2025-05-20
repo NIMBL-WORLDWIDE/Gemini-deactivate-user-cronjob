@@ -162,19 +162,21 @@ func main() {
 		}
 	}
 
-	//Check if Auto Inactive is Enabled
+	// Check if auto-deactivation for inactive users is enabled and if there are users to process
 	if jobOptions.EnableAutoInactive && len(inactiveTransactionUsers) > 0 {
-		// Deactivate Inactive users
-		for _, user := range inactiveTransactionUsers {
-			log.Debug().Str("Deactivating Inactive Transactions Users:", user.FirstName+" "+user.LastName).Send()
-			// Deactivate user
-			err := dbClient.setDeactiveUser(user.userID, config.Inactive)
-			if err != nil {
-				log.Error().Err(err).Msg("setDeactiveUser")
-				continue
-			}
+		log.Debug().
+			Int("userCount", len(inactiveTransactionUsers)).
+			Msg("Starting bulk deactivation of inactive transaction users")
 
-			log.Debug().Str("Deactivated", user.FirstName+" "+user.LastName).Send()
+		// Perform bulk deactivation
+		if err := dbClient.setDeactiveUsersBulk(inactiveTransactionUsers, config.Inactive); err != nil {
+			log.Error().
+				Err(err).
+				Msg("Failed to deactivate inactive transaction users")
+		} else {
+			log.Debug().
+				Int("userCount", len(inactiveTransactionUsers)).
+				Msg("Successfully deactivated inactive transaction users")
 		}
 	}
 }

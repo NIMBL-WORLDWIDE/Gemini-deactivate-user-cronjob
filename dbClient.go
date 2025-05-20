@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -350,4 +351,60 @@ func (c *dbClient) getInactiveTransactionUsers() (users []deactiveUsers, err err
 	}
 
 	return users, nil
+}
+
+func (c *dbClient) setDeactiveUsersBulk(users []deactiveUsers, reason string) error {
+	const batchSize = 1000 // Max number of inserts per query
+
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		} else {
+			tx.Commit()
+		}
+	}()
+
+	// Step 1: Build userID slice for UPDATE query
+	userIDs := make([]interface{}, len(users))
+	for i, user := range users {
+		userIDs[i] = user.userID
+	}
+
+	// Step 2: Perform bulk UPDATE in a single query
+	updateQuery := `UPDATE user SET active = 0 WHERE userID IN (?` + strings.Repeat(",?", len(userIDs)-1) + `)`
+	if _, err = tx.Exec(updateQuery, userIDs...); err != nil {
+		return fmt.Errorf("error updating users: %w", err)
+	}
+
+	// Step 3: Perform bulk INSERT in batches
+	for i := 0; i < len(users); i += batchSize {
+		end := i + batchSize
+		if end > len(users) {
+			end = len(users)
+		}
+		batch := users[i:end]
+
+		var placeholders []string
+		var args []interface{}
+
+		for _, user := range batch {
+			// Each row adds two arguments: userID and reason
+			placeholders = append(placeholders, "(?, CURDATE(), 'DEACTIVATED_CRONJOB', ?)")
+			args = append(args, user.userID, reason)
+		}
+
+		insertQuery := `
+			INSERT INTO deactivatedUser (userID, deactivatedDate, deactivatedBy, reason)
+			VALUES ` + strings.Join(placeholders, ",")
+
+		if _, err = tx.Exec(insertQuery, args...); err != nil {
+			return fmt.Errorf("error inserting batch: %w", err)
+		}
+	}
+
+	return nil
 }
