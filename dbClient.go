@@ -354,7 +354,8 @@ func (c *dbClient) getInactiveTransactionUsers() (users []deactiveUsers, err err
 }
 
 func (c *dbClient) setDeactiveUsersBulk(users []deactiveUsers, reason string) error {
-	const batchSize = 1000 // Max number of inserts per query
+	const batchUpdateSize = 10000 // Safe upper batch size for UPDATE
+	const batchInsertSize = 1000  // Smaller batch size for INSERT
 
 	tx, err := c.db.Begin()
 	if err != nil {
@@ -368,21 +369,28 @@ func (c *dbClient) setDeactiveUsersBulk(users []deactiveUsers, reason string) er
 		}
 	}()
 
-	// Step 1: Build userID slice for UPDATE query
-	userIDs := make([]interface{}, len(users))
-	for i, user := range users {
-		userIDs[i] = user.userID
+	// Step 1: Perform bulk UPDATE in batches
+	for i := 0; i < len(users); i += batchUpdateSize {
+		end := i + batchUpdateSize
+		if end > len(users) {
+			end = len(users)
+		}
+		batch := users[i:end]
+
+		userIDs := make([]interface{}, len(batch))
+		for i, user := range batch {
+			userIDs[i] = user.userID
+		}
+
+		updateQuery := `UPDATE user SET active = 0 WHERE userID IN (?` + strings.Repeat(",?", len(userIDs)-1) + `)`
+		if _, err = tx.Exec(updateQuery, userIDs...); err != nil {
+			return fmt.Errorf("error updating users: %w", err)
+		}
 	}
 
-	// Step 2: Perform bulk UPDATE in a single query
-	updateQuery := `UPDATE user SET active = 0 WHERE userID IN (?` + strings.Repeat(",?", len(userIDs)-1) + `)`
-	if _, err = tx.Exec(updateQuery, userIDs...); err != nil {
-		return fmt.Errorf("error updating users: %w", err)
-	}
-
-	// Step 3: Perform bulk INSERT in batches
-	for i := 0; i < len(users); i += batchSize {
-		end := i + batchSize
+	// Step 2: Perform bulk INSERT in smaller batches
+	for i := 0; i < len(users); i += batchInsertSize {
+		end := i + batchInsertSize
 		if end > len(users) {
 			end = len(users)
 		}
@@ -392,7 +400,6 @@ func (c *dbClient) setDeactiveUsersBulk(users []deactiveUsers, reason string) er
 		var args []interface{}
 
 		for _, user := range batch {
-			// Each row adds two arguments: userID and reason
 			placeholders = append(placeholders, "(?, CURDATE(), 'DEACTIVATED_CRONJOB', ?)")
 			args = append(args, user.userID, reason)
 		}
