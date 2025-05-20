@@ -355,7 +355,7 @@ func (c *dbClient) getInactiveTransactionUsers() (users []deactiveUsers, err err
 
 func (c *dbClient) setDeactiveUsersBulk(users []deactiveUsers, reason string) error {
 	const batchUpdateSize = 10000 // Safe upper batch size for UPDATE
-	const batchInsertSize = 1000  // Smaller batch size for INSERT
+	const batchInsertSize = 5000  // Smaller batch size for INSERT
 
 	tx, err := c.db.Begin()
 	if err != nil {
