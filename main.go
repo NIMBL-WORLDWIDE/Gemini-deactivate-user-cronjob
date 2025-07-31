@@ -107,19 +107,24 @@ func main() {
 	}
 
 	if len(expiredUser) > 0 {
-		log.Debug().Interface("expiredUsers", expiredUser).Msg("expiredUsers")
-
 		// Deactivate Expired users
-		for _, user := range expiredUser {
-			log.Debug().Str("Deactivating User:", user.FirstName+" "+user.LastName).Send()
-			// Deactivate user
-			err := dbClient.setDeactiveUser(user.userID, config.Expired)
-			if err != nil {
-				log.Error().Err(err).Msg("setDeactiveUser")
-				continue
-			}
+		start := time.Now()
+		log.Debug().
+			Int("userCount", len(expiredUser)).
+			Str("startTime", start.Format(time.RFC3339)).
+			Msg("Started bulk deactivation of expired users")
 
-			log.Debug().Str("Deactivated", user.FirstName+" "+user.LastName).Send()
+		// Perform bulk deactivation
+		if err := dbClient.setDeactiveUsersBulk(expiredUser, config.Expired); err != nil {
+			log.Error().
+				Err(err).
+				Msg("Failed to deactivate expired users")
+		} else {
+			log.Debug().
+				Int("userCount", len(expiredUser)).
+				Str("endTime", time.Now().Format(time.RFC3339)).
+				Int("durationSeconds", int(time.Since(start).Seconds())).
+				Msg("Finished bulk deactivation of expired users")
 		}
 	}
 
@@ -162,19 +167,25 @@ func main() {
 		}
 	}
 
-	//Check if Auto Inactive is Enabled
+	// Check if auto-deactivation for inactive users is enabled and if there are users to process
 	if jobOptions.EnableAutoInactive && len(inactiveTransactionUsers) > 0 {
-		// Deactivate Inactive users
-		for _, user := range inactiveTransactionUsers {
-			log.Debug().Str("Deactivating Inactive Transactions Users:", user.FirstName+" "+user.LastName).Send()
-			// Deactivate user
-			err := dbClient.setDeactiveUser(user.userID, config.Inactive)
-			if err != nil {
-				log.Error().Err(err).Msg("setDeactiveUser")
-				continue
-			}
+		start := time.Now()
+		log.Debug().
+			Int("userCount", len(inactiveTransactionUsers)).
+			Str("startTime", start.Format(time.RFC3339)).
+			Msg("Starting bulk deactivation of inactive transaction users")
 
-			log.Debug().Str("Deactivated", user.FirstName+" "+user.LastName).Send()
+		// Perform bulk deactivation
+		if err := dbClient.setDeactiveUsersBulk(inactiveTransactionUsers, config.Inactive); err != nil {
+			log.Error().
+				Err(err).
+				Msg("Failed to deactivate inactive transaction users")
+		} else {
+			log.Debug().
+				Int("userCount", len(inactiveTransactionUsers)).
+				Str("endTime", time.Now().Format(time.RFC3339)).
+				Int("durationSeconds", int(time.Since(start).Seconds())).
+				Msg("Finished bulk deactivation inactive transaction users")
 		}
 	}
 }
